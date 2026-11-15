@@ -116,7 +116,6 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.format.Formatter;
 import android.text.style.ForegroundColorSpan;
-import android.util.Log;
 import android.util.Rational;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
@@ -145,6 +144,23 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.URL;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.cert.CertificateException;
@@ -2645,6 +2661,180 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         return !ControllerHandler.isGameControllerDevice(device)
                 || device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+    }
+
+    // ---- 诊断日志：写入应用外部私有目录，不需要任何存储权限 ----
+    private static final String DIAG_LOG_NAME = "moonlight-diag.log";
+    private static final long DIAG_LOG_MAX_BYTES = 4L * 1024 * 1024;
+
+    static File getDiagLogFile(Context context) {
+        File dir = context.getExternalFilesDir(null);
+        if (dir == null) {
+            dir = context.getFilesDir();
+        }
+        return new File(dir, DIAG_LOG_NAME);
+    }
+
+    static void appendDiagLog(String line) {
+        try {
+            Context context = Game.instance;
+            if (context == null) {
+                return;
+            }
+
+            File file = getDiagLogFile(context);
+            if (file.length() > DIAG_LOG_MAX_BYTES) {
+                // 避免文件无限增长：超过上限直接重新开始
+                file.delete();
+            }
+
+            boolean isNew = !file.exists() || file.length() == 0;
+            String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+
+            FileWriter writer = new FileWriter(file, true);
+            try {
+                if (isNew) {
+                    writer.write("=== Moonlight 诊断日志 ===\r\n");
+                    writer.write("文件路径: " + file.getAbsolutePath() + "\r\n");
+                    writer.write("设备: " + Build.MANUFACTURER + " " + Build.MODEL
+                            + " / Android " + Build.VERSION.RELEASE + "\r\n");
+                    writer.write("---\r\n");
+                }
+                writer.write(ts + " " + line + "\r\n");
+            } finally {
+                writer.close();
+            }
+        } catch (Throwable ignored) {
+            // 写日志失败绝不能影响串流
+        }
+    }
+
+    // ---- 把诊断日志推送到主机：POST https://<当前串流主机>:47990/diag-log ----
+    private static final int DIAG_LOG_PORT = 47990;
+    private static final String DIAG_LOG_PATH = "/diag-log";
+    private static final long DIAG_LOG_MAX_UPLOAD_BYTES = 10L * 1024 * 1024;
+
+    private volatile boolean diagLogUploading;
+
+    public void uploadDiagLogToHost() {
+        if (diagLogUploading) {
+            displayMessage("正在上传诊断日志，请稍候");
+            return;
+        }
+
+        final File logFile = getDiagLogFile(this);
+        if (!logFile.exists() || logFile.length() == 0) {
+            displayMessage("暂无日志");
+            return;
+        }
+        if (logFile.length() > DIAG_LOG_MAX_UPLOAD_BYTES) {
+            displayMessage("日志超过 10 MB，已取消上传");
+            return;
+        }
+        if (streamReqBean == null || streamReqBean.getActiveAddress() == null) {
+            displayMessage("未获取到主机地址");
+            return;
+        }
+
+        final String host = streamReqBean.getActiveAddress().address;
+        diagLogUploading = true;
+        displayMessage("正在上传诊断日志到 " + host + " ...");
+
+        // 网络请求放到后台线程，避免阻塞 UI
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String result;
+                try {
+                    result = postDiagLog(host, logFile);
+                }
+                catch (Exception e) {
+                    result = "网络错误: " + e.getMessage();
+                }
+                finally {
+                    diagLogUploading = false;
+                }
+                displayMessage(result);
+            }
+        }, "DiagLogUpload").start();
+    }
+
+    private static String postDiagLog(String host, File logFile) throws Exception {
+        // 主机使用自签名证书：仅本次上传放行任意证书，不影响应用其它 HTTPS 连接
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, new TrustManager[] { new X509TrustManager() {
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+
+            @Override
+            public X509Certificate[] getAcceptedIssuers() {
+                return new X509Certificate[0];
+            }
+        } }, new SecureRandom());
+
+        byte[] body = readDiagLogBytes(logFile);
+
+        HttpsURLConnection connection = null;
+        try {
+            // IPv6 字面量需要方括号，否则 URL 解析失败
+            String hostPart = (host.indexOf(':') >= 0 && !host.startsWith("[")) ? "[" + host + "]" : host;
+            URL url = new URL("https://" + hostPart + ":" + DIAG_LOG_PORT + DIAG_LOG_PATH);
+            connection = (HttpsURLConnection) url.openConnection();
+            connection.setSSLSocketFactory(sslContext.getSocketFactory());
+            connection.setHostnameVerifier(new HostnameVerifier() {
+                @Override
+                public boolean verify(String hostname, SSLSession session) {
+                    return true;
+                }
+            });
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(20000);
+            connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+            connection.setFixedLengthStreamingMode(body.length);
+
+            OutputStream os = connection.getOutputStream();
+            try {
+                os.write(body);
+            }
+            finally {
+                os.close();
+            }
+
+            int code = connection.getResponseCode();
+            if (code == 200) {
+                return "诊断日志已发送到主机";
+            }
+            return "上传失败：HTTP " + code;
+        }
+        finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private static byte[] readDiagLogBytes(File file) throws IOException {
+        FileInputStream in = new FileInputStream(file);
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                out.write(buffer, 0, read);
+                if (out.size() > DIAG_LOG_MAX_UPLOAD_BYTES) {
+                    throw new IOException("日志超过 10 MB");
+                }
+            }
+            return out.toByteArray();
+        }
+        finally {
+            in.close();
+        }
     }
 
     @Override

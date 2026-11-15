@@ -323,6 +323,20 @@
                     android:text="HDR开关"
                     android:textSize="9dp" />
 
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:layout_marginRight="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/ic_game_menu_btn_selector"
+                    android:drawablePadding="4dp"
+                    android:drawableTop="@drawable/ic_axi_clipboard_send"
+                    android:gravity="center"
+                    android:id="@+id/btn_send_diag_log"
+                    android:padding="4dp"
+                    android:text="发送诊断日志"
+                    android:textSize="9dp" />
+
 
             </LinearLayout>
 

@@ -51,6 +51,7 @@ public class GameFunctionFragment extends BaseGameMenuDialog implements View.OnC
         v.findViewById(R.id.btn_win_center).setOnClickListener(this);
         v.findViewById(R.id.btn_win_p).setOnClickListener(this);
         v.findViewById(R.id.btn_hdr).setOnClickListener(this);
+        v.findViewById(R.id.btn_send_diag_log).setOnClickListener(this);
 
         v.findViewById(R.id.btn_display_1).setOnClickListener(this);
         v.findViewById(R.id.btn_display_2).setOnClickListener(this);
@@ -132,6 +133,10 @@ public class GameFunctionFragment extends BaseGameMenuDialog implements View.OnC
         }
         if(v.getId()==R.id.btn_hdr){
             click.click("HDR开关",15);
+            return;
+        }
+        if(v.getId()==R.id.btn_send_diag_log){
+            click.click("发送诊断日志",16);
             return;
         }
 

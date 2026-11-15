@@ -224,6 +224,11 @@ public class GameMenuFragment extends BaseGameMenuDialog implements View.OnClick
                         case 15://HDR开关
                             sendKeys(new short[]{KeyboardTranslator.VK_LWIN, KeyboardTranslator.VK_LMENU, KeyboardTranslator.VK_B});
                             break;
+                        case 16://发送诊断日志到主机
+                            if(game!=null){
+                                game.uploadDiagLogToHost();
+                            }
+                            break;
                     }
                 }
             });
